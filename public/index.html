@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Générateur d'Ebooks Illustrés</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Georgia', 'Times New Roman', serif;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    color: #eee;
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 40px 20px;
+  }
+  .card {
+    background: #fff;
+    color: #222;
+    max-width: 640px;
+    width: 100%;
+    border-radius: 14px;
+    padding: 36px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+  }
+  h1 { font-size: 1.6em; margin-top: 0; color: #16213e; }
+  label { display: block; margin-top: 16px; font-weight: bold; font-size: 0.9em; }
+  input, select {
+    width: 100%; padding: 10px; margin-top: 6px;
+    border: 1px solid #ccc; border-radius: 8px; font-size: 1em;
+  }
+  button {
+    margin-top: 24px; width: 100%; padding: 14px;
+    background: #16213e; color: #fff; border: none;
+    border-radius: 8px; font-size: 1.05em; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #status { margin-top: 18px; font-size: 0.9em; white-space: pre-line; }
+  #progressBar {
+    height: 8px; background: #eee; border-radius: 4px; margin-top: 10px; overflow: hidden;
+  }
+  #progressFill { height: 100%; background: #16213e; width: 0%; transition: width .3s; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>📖 Générateur d'Ebook Illustré</h1>
+    <p>Décris ton livre, l'IA écrit le texte (Claude) et crée les illustrations (DALL-E), puis tu télécharges le PDF fini.</p>
+
+    <label>Thème / sujet du livre</label>
+    <input id="theme" placeholder="Ex : Les secrets de la productivité pour entrepreneurs" />
+
+    <label>Genre</label>
+    <select id="genre">
+      <option>Développement personnel</option>
+      <option>Fiction / Roman</option>
+      <option>Business / Entrepreneuriat</option>
+      <option>Enfants / Jeunesse</option>
+      <option>Science-fiction</option>
+      <option>Guide pratique</option>
+    </select>
+
+    <label>Nombre de chapitres (1 à 12)</label>
+    <input id="chapterCount" type="number" min="1" max="12" value="5" />
+
+    <label>Langue</label>
+    <select id="language">
+      <option>français</option>
+      <option>anglais</option>
+      <option>espagnol</option>
+    </select>
+
+    <button id="generateBtn" onclick="generateEbook()">✨ Générer l'ebook</button>
+
+    <div id="progressBar" style="display:none;"><div id="progressFill"></div></div>
+    <div id="status"></div>
+  </div>
+
+<script>
+const statusEl = document.getElementById('status');
+const btn = document.getElementById('generateBtn');
+const progressBar = document.getElementById('progressBar');
+const progressFill = document.getElementById('progressFill');
+
+function setProgress(pct, msg) {
+  progressBar.style.display = 'block';
+  progressFill.style.width = pct + '%';
+  statusEl.textContent = msg;
+}
+
+async function generateEbook() {
+  const theme = document.getElementById('theme').value.trim();
+  const genre = document.getElementById('genre').value;
+  const chapterCount = document.getElementById('chapterCount').value;
+  const language = document.getElementById('language').value;
+
+  if (!theme) {
+    statusEl.textContent = "⚠️ Merci d'indiquer un thème pour ton livre.";
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    setProgress(5, "Rédaction du livre en cours (Claude)...");
+    const textRes = await fetch('/.netlify/functions/generate-text', {
+      method: 'POST',
+      body: JSON.stringify({ theme, genre, chapterCount, language }),
+    });
+    const book = await textRes.json();
+    if (book.error) throw new Error(book.error);
+
+    setProgress(25, `"${book.title}" écrit ! Génération des illustrations...`);
+
+    const images = [];
+    for (let i = 0; i < book.chapters.length; i++) {
+      const chapter = book.chapters[i];
+      setProgress(
+        25 + Math.round((i / book.chapters.length) * 55),
+        `Illustration ${i + 1}/${book.chapters.length} : "${chapter.heading}"`
+      );
+      const imgRes = await fetch('/.netlify/functions/generate-image', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: chapter.imagePrompt }),
+      });
+      const imgData = await imgRes.json();
+      images.push(imgData.image || null);
+    }
+
+    setProgress(85, "Mise en page et création du PDF...");
+    await buildPdf(book, images);
+
+    setProgress(100, "✅ Terminé ! Ton PDF a été téléchargé.");
+  } catch (err) {
+    statusEl.textContent = "❌ Erreur : " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function buildPdf(book, images) {
+  const { PDFDocument, StandardFonts, rgb } = PDFLib;
+  const pdfDoc = await PDFDocument.create();
+  const titleFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const bodyFont = await pdfDoc.embedFont(StandardFonts.TimesRoman);
+
+  const pageWidth = 595.28, pageHeight = 841.89; // A4
+  const margin = 56;
+
+  // Page de couverture
+  const cover = pdfDoc.addPage([pageWidth, pageHeight]);
+  cover.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, color: rgb(0.09, 0.13, 0.24) });
+  cover.drawText(book.title, {
+    x: margin, y: pageHeight - 220, size: 30, font: titleFont,
+    color: rgb(1, 1, 1), maxWidth: pageWidth - margin * 2, lineHeight: 36,
+  });
+  if (book.subtitle) {
+    cover.drawText(book.subtitle, {
+      x: margin, y: pageHeight - 270, size: 16, font: bodyFont,
+      color: rgb(0.8, 0.8, 0.85), maxWidth: pageWidth - margin * 2,
+    });
+  }
+
+  // Chapitres
+  for (let i = 0; i < book.chapters.length; i++) {
+    const chapter = book.chapters[i];
+    const imgB64 = images[i];
+
+    let page = pdfDoc.addPage([pageWidth, pageHeight]);
+    let cursorY = pageHeight - margin;
+
+    // Image du chapitre
+    if (imgB64) {
+      try {
+        const imgBytes = Uint8Array.from(atob(imgB64), c => c.charCodeAt(0));
+        const img = await pdfDoc.embedJpg(imgBytes).catch(() => pdfDoc.embedPng(imgBytes));
+        const imgW = pageWidth - margin * 2;
+        const imgH = imgW * (img.height / img.width);
+        page.drawImage(img, { x: margin, y: cursorY - imgH, width: imgW, height: imgH });
+        cursorY -= imgH + 24;
+      } catch (e) { /* image ignorée si erreur de décodage */ }
+    }
+
+    // Titre du chapitre
+    page.drawText(`Chapitre ${i + 1} — ${chapter.heading}`, {
+      x: margin, y: cursorY, size: 18, font: titleFont, color: rgb(0.09, 0.13, 0.24),
+      maxWidth: pageWidth - margin * 2,
+    });
+    cursorY -= 34;
+
+    // Texte du chapitre (avec retour à la ligne manuel + nouvelles pages)
+    const words = chapter.text.split(/\s+/);
+    const fontSize = 12, lineHeight = 17, maxWidth = pageWidth - margin * 2;
+    let line = '';
+
+    for (const word of words) {
+      const testLine = line ? line + ' ' + word : word;
+      const width = bodyFont.widthOfTextAtSize(testLine, fontSize);
+      if (width > maxWidth) {
+        if (cursorY < margin + lineHeight) {
+          page = pdfDoc.addPage([pageWidth, pageHeight]);
+          cursorY = pageHeight - margin;
+        }
+        page.drawText(line, { x: margin, y: cursorY, size: fontSize, font: bodyFont, color: rgb(0.15, 0.15, 0.15) });
+        cursorY -= lineHeight;
+        line = word;
+      } else {
+        line = testLine;
+      }
+    }
+    if (line) {
+      if (cursorY < margin + lineHeight) {
+        page = pdfDoc.addPage([pageWidth, pageHeight]);
+        cursorY = pageHeight - margin;
+      }
+      page.drawText(line, { x: margin, y: cursorY, size: fontSize, font: bodyFont, color: rgb(0.15, 0.15, 0.15) });
+    }
+  }
+
+  const pdfBytes = await pdfDoc.save();
+  const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = (book.title || 'ebook').replace(/[^a-z0-9]/gi, '_') + '.pdf';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+</script>
+</body>
+</html>
